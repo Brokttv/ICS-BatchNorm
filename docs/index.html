@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BatchNorm Affine Transformation & Gradient Visualization</title>
+    <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 10px; background-color: #f0f2f5; color: #333; display: flex; flex-direction: column; align-items: center; }
+        .main-container { display: flex; flex-direction: column; width: 95%; max-width: 1400px; gap: 10px; }
+        .row { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+        .column { flex: 1; min-width: 300px; background-color: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        .column.controls { flex-basis: 100%; max-width: 600px; margin: 0 auto; }
+        .plot-container { min-height: 230px; }
+        .plot-container + .plot-container { /* Adds margin to any plot-container that directly follows another within the same parent */
+            margin-top: 15px; /* Gap between stacked plots */
+        }
+        h2 { color: #0056b3; text-align: center; margin-top: 0; margin-bottom: 10px; font-size: 1.15em; }
+        .slider-group { margin-bottom: 10px; }
+        .slider-group label { display: block; margin-bottom: 3px; font-weight: 500; color: #555; font-size: 0.9em; }
+        .slider-group input[type="range"] { width: 100%; cursor: pointer; }
+        .value-display { font-weight: bold; color: #0056b3; margin-left: 6px; font-size: 0.9em; }
+        .info-display { margin-top: 10px; padding: 8px; background-color: #e9ecef; border-radius: 6px; font-size: 0.85em; }
+        .info-display p { margin: 4px 0; }
+        .info-display strong { color: #0056b3; }
+        button { background-color: #007bff; color: white; border: none; padding: 8px 12px; border-radius: 5px; cursor: pointer; font-size: 0.95em; transition: background-color 0.2s; }
+        button:hover { background-color: #0056b3; }
+        .target-info { text-align: center; font-size: 0.9em; color: #555; margin-bottom: 8px; }
+    </style>
+</head>
+<body>
+
+    <div class="main-container">
+        <div class="column controls">
+            <h2>Controls</h2>
+            <div class="slider-group">
+                <label for="gamma-slider">Gamma (γ - Scale): <span id="gamma-value" class="value-display">1.00</span></label>
+                <input type="range" id="gamma-slider" min="0.1" max="3.0" value="1.0" step="0.01">
+            </div>
+            <div class="slider-group">
+                <label for="beta-slider">Beta (β - Shift): <span id="beta-value" class="value-display">0.00</span></label>
+                <input type="range" id="beta-slider" min="-2.0" max="2.0" value="0.0" step="0.01">
+            </div>
+            <div class="slider-group">
+                <label for="lr-slider">Learning Rate (α): <span id="lr-value" class="value-display">0.10</span></label>
+                <input type="range" id="lr-slider" min="0.01" max="1.0" value="0.1" step="0.01">
+            </div>
+            <button id="step-button">Take a Gradient Step</button>
+            <div class="info-display">
+                 <p class="target-info">Target for Affined Distribution: Mean ≈ <strong id="targetMeanDisp">0.8</strong>, StdDev ≈ <strong id="targetStdDevDisp">1.5</strong></p>
+                <p>Current Loss: <strong id="lossValue">N/A</strong></p>
+                <p>dL/dγ: <strong id="gradGammaValue">N/A</strong> | dL/dβ: <strong id="gradBetaValue">N/A</strong></p>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="column">
+                <h2>Activation Distributions</h2>
+                <div id="normalizedPlot" class="plot-container"></div>
+                <div id="affinedPlot" class="plot-container"></div>
+            </div>
+            <div class="column">
+                <h2>Loss Landscape & Gradient</h2>
+                <div id="lossLandscapePlot" class="plot-container" style="min-height: 380px;"></div>
+            </div>
+        </div>
+    </div>
+
+<script>
+    // --- Configuration ---
+    const NUM_SAMPLES = 500;
+    const TARGET_MEAN = 0.8;
+    const TARGET_STDDEV = 1.5;
+    const GAMMA_RANGE = { min: 0.1, max: 3.0 };
+    const BETA_RANGE = { min: -2.0, max: 2.0 };
+    const LANDSCAPE_RESOLUTION = 30;
+
+    // --- DOM Elements ---
+    // (DOM element fetching remains the same)
+    const gammaSlider = document.getElementById('gamma-slider');
+    const betaSlider = document.getElementById('beta-slider');
+    const lrSlider = document.getElementById('lr-slider');
+    const gammaValueDisplay = document.getElementById('gamma-value');
+    const betaValueDisplay = document.getElementById('beta-value');
+    const lrValueDisplay = document.getElementById('lr-value');
+    const lossValueDisplay = document.getElementById('lossValue');
+    const gradGammaValueDisplay = document.getElementById('gradGammaValue');
+    const gradBetaValueDisplay = document.getElementById('gradBetaValue');
+    const stepButton = document.getElementById('step-button');
+    document.getElementById('targetMeanDisp').textContent = TARGET_MEAN.toFixed(1);
+    document.getElementById('targetStdDevDisp').textContent = TARGET_STDDEV.toFixed(1);
+
+
+    // --- Data & State ---
+    let normalizedData = [];
+    let affinedData = [];
+    let landscapeGammaVals = [];
+    let landscapeBetaVals = [];
+    let landscapeLossVals = [];
+
+    // --- Utility: Generate normally distributed random numbers ---
+    function generateNormalRandom(mean, stddev) {
+        let u1 = 0, u2 = 0;
+        while (u1 === 0) u1 = Math.random();
+        while (u2 === 0) u2 = Math.random();
+        const z0 = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
+        return z0 * stddev + mean;
+    }
+
+    // --- Loss and Gradient Calculation ---
+    // (Loss and Gradient functions remain the same)
+    function calculateLoss(gamma, beta) {
+        return Math.pow(beta - TARGET_MEAN, 2) + Math.pow(gamma - TARGET_STDDEV, 2);
+    }
+
+    function calculateGradients(gamma, beta) {
+        const dL_dgamma = 2 * (gamma - TARGET_STDDEV);
+        const dL_dbeta = 2 * (beta - TARGET_MEAN);
+        return { gradGamma: dL_dgamma, gradBeta: dL_dbeta };
+    }
+
+
+    // --- Prepare Loss Landscape Data ---
+    // (prepareLossLandscape function remains the same)
+    function prepareLossLandscape() {
+        const gammaStep = (GAMMA_RANGE.max - GAMMA_RANGE.min) / LANDSCAPE_RESOLUTION;
+        const betaStep = (BETA_RANGE.max - BETA_RANGE.min) / LANDSCAPE_RESOLUTION;
+
+        for (let i = 0; i <= LANDSCAPE_RESOLUTION; i++) {
+            landscapeGammaVals.push(GAMMA_RANGE.min + i * gammaStep);
+            landscapeBetaVals.push(BETA_RANGE.min + i * betaStep);
+        }
+
+        for (let j = 0; j <= LANDSCAPE_RESOLUTION; j++) {
+            const beta = landscapeBetaVals[j];
+            const rowLoss = [];
+            for (let i = 0; i <= LANDSCAPE_RESOLUTION; i++) {
+                const gamma = landscapeGammaVals[i];
+                rowLoss.push(calculateLoss(gamma, beta));
+            }
+            landscapeLossVals.push(rowLoss);
+        }
+    }
+
+
+    // --- Plotting Functions (Plotly.js) ---
+    function plotDistribution(divId, data, titleText, plotColor) {
+        const mean_val = data.length > 0 ? data.reduce((a, b) => a + b, 0) / data.length : 0;
+
+        let bodyFillColor = plotColor;
+        if (plotColor.startsWith('rgba')) {
+            const parts = plotColor.match(/[\d.]+/g);
+            if (parts && parts.length === 4) {
+                bodyFillColor = `rgba(${parts[0]}, ${parts[1]}, ${parts[2]}, ${parseFloat(parts[3]) * 0.4})`; // More transparent for violin body
+            }
+        } else if (plotColor.startsWith('rgb')) {
+             bodyFillColor = plotColor.replace('rgb', 'rgba').replace(')', ', 0.2)');
+        }
+
+        const trace = {
+            x: data,
+            type: 'violin',
+            orientation: 'h',
+            points: 'all',
+            jitter: 0.35,      // Adjust jitter width (0-1)
+            pointpos: 0,       // Center points on the violin axis
+            box: { visible: false },
+            meanline: { visible: false }, // Using custom mean line and annotation
+            marker: {
+                color: plotColor,  // Color for individual points (uses original alpha)
+                size: 3,           // Slightly smaller points for violin
+            },
+            fillcolor: bodyFillColor, // Color for the violin body shape
+            line: { color: plotColor }    // Outline color for the violin body shape
+        };
+
+        const layout = {
+            title: {
+                text: titleText,
+                font: { size: 13 }, // Slightly reduced plot title font size
+                y: 0.95, // Adjust title position if needed
+                yanchor: 'top'
+            },
+            xaxis: { title: 'Activation Value' },
+            yaxis: {
+                zeroline: false,
+                showticklabels: false,
+                showgrid: false,
+                fixedrange: true,
+                range: [-1, 1] // Provides a consistent vertical extent for the violin & mean line
+            },
+            margin: { t: 45, b: 40, l: 40, r: 20 }, // Increased top margin for title
+            shapes: [{
+                type: 'line',
+                x0: mean_val, x1: mean_val,
+                y0: -0.5, y1: 0.5, // Span typical violin y-range
+                xref: 'x', yref: 'y',
+                line: { color: 'rgba(255, 0, 0, 0.9)', width: 2, dash: 'dash' }
+            }],
+            annotations: [{
+                x: mean_val, y: 0.55, // Position annotation above the violin's typical upper extent
+                xref: 'x', yref: 'y',
+                text: `Mean: ${mean_val.toFixed(3)}`,
+                showarrow: false,
+                font: { size: 10, color: 'black' },
+                bgcolor: 'rgba(255, 255, 255, 0.75)',
+                xanchor: 'center', yanchor: 'bottom',
+            }]
+        };
+        Plotly.newPlot(divId, [trace], layout, {responsive: true});
+    }
+
+    function plotLossLandscape(currentGamma, currentBeta, gradGamma, gradBeta) {
+        // (plotLossLandscape function remains largely the same, ensure margins are okay)
+        const contourTrace = {
+            z: landscapeLossVals,
+            x: landscapeGammaVals,
+            y: landscapeBetaVals,
+            type: 'contour',
+            colorscale: 'Viridis',
+            contours: { coloring: 'heatmap', showlabels: true, labelfont: {size:10, color:'white'} }
+        };
+
+        const pointTrace = {
+            x: [currentGamma],
+            y: [currentBeta],
+            type: 'scatter',
+            mode: 'markers',
+            marker: { color: 'red', size: 12, symbol: 'x' }
+        };
+        
+        const traces = [contourTrace, pointTrace];
+
+        if (gradGamma !== null && gradBeta !== null) {
+            const arrowLengthFactor = 0.05; 
+            let norm = Math.sqrt(gradGamma**2 + gradBeta**2);
+            // Ensure landscapeVals are populated before accessing them for scaling
+            let arrowScaleX = 0;
+            let arrowScaleY = 0;
+            if (norm > 0 && landscapeGammaVals.length > 1 && landscapeBetaVals.length > 1) {
+                 arrowScaleX = (landscapeGammaVals[landscapeGammaVals.length-1] - landscapeGammaVals[0]) * arrowLengthFactor / norm;
+                 arrowScaleY = (landscapeBetaVals[landscapeBetaVals.length-1] - landscapeBetaVals[0]) * arrowLengthFactor / norm;
+            }
+
+
+            const gradientArrowTrace = {
+                x: [currentGamma, currentGamma - gradGamma * arrowScaleX],
+                y: [currentBeta, currentBeta - gradBeta * arrowScaleY],
+                type: 'scatter',
+                mode: 'lines',
+                line: { color: 'red', width: 3 }
+            };
+            traces.push(gradientArrowTrace);
+        }
+
+        const layout = {
+            title: 'Loss Landscape (L = (β-Tβ)² + (γ-Tγ)²)',
+            xaxis: { title: 'Gamma (γ)', range: [GAMMA_RANGE.min, GAMMA_RANGE.max] },
+            yaxis: { title: 'Beta (β)', range: [BETA_RANGE.min, BETA_RANGE.max] },
+            margin: { t: 40, b: 50, l: 50, r: 30 },
+            hovermode: false,
+        };
+        Plotly.newPlot('lossLandscapePlot', traces, layout, {responsive: true});
+    }
+
+
+    // --- Main Update Function ---
+    // (updateVisualization function remains the same)
+    function updateVisualization() {
+        const gamma = parseFloat(gammaSlider.value);
+        const beta = parseFloat(betaSlider.value);
+        const learningRate = parseFloat(lrSlider.value);
+
+        gammaValueDisplay.textContent = gamma.toFixed(2);
+        betaValueDisplay.textContent = beta.toFixed(2);
+        lrValueDisplay.textContent = learningRate.toFixed(2);
+
+        affinedData = normalizedData.map(x => gamma * x + beta);
+        plotDistribution('affinedPlot', affinedData, 'Affined Activations (γx̂ + β)', 'rgba(23, 162, 184, 0.7)');
+
+        const loss = calculateLoss(gamma, beta);
+        const { gradGamma, gradBeta } = calculateGradients(gamma, beta);
+
+        lossValueDisplay.textContent = loss.toFixed(4);
+        gradGammaValueDisplay.textContent = gradGamma.toFixed(4);
+        gradBetaValueDisplay.textContent = gradBeta.toFixed(4);
+
+        plotLossLandscape(gamma, beta, gradGamma, gradBeta);
+    }
+
+
+    // --- Handle Step Button Click ---
+    // (handleStep function remains the same)
+    function handleStep() {
+        let gamma = parseFloat(gammaSlider.value);
+        let beta = parseFloat(betaSlider.value);
+        const learningRate = parseFloat(lrSlider.value);
+
+        const { gradGamma, gradBeta } = calculateGradients(gamma, beta);
+
+        gamma = gamma - learningRate * gradGamma;
+        beta = beta - learningRate * gradBeta;
+
+        gammaSlider.value = Math.max(GAMMA_RANGE.min, Math.min(GAMMA_RANGE.max, gamma)).toFixed(2);
+        betaSlider.value = Math.max(BETA_RANGE.min, Math.min(BETA_RANGE.max, beta)).toFixed(2);
+        
+        updateVisualization();
+    }
+
+    // --- Initialization ---
+    // (Initialize function remains the same, calls to plotDistribution will use new violin style)
+    function initialize() {
+        for (let i = 0; i < NUM_SAMPLES; i++) {
+            normalizedData.push(generateNormalRandom(0, 1));
+        }
+        // Initial plot for normalized data now uses violin
+        plotDistribution('normalizedPlot', normalizedData, 'Normalized Activations (x̂)', 'rgba(0, 123, 255, 0.7)');
+
+        prepareLossLandscape();
+        
+        updateVisualization(); // This will plot affinedData using violin too
+
+        gammaSlider.addEventListener('input', updateVisualization);
+        betaSlider.addEventListener('input', updateVisualization);
+        lrSlider.addEventListener('input', () => {
+            lrValueDisplay.textContent = parseFloat(lrSlider.value).toFixed(2);
+            updateVisualization(); 
+        });
+        stepButton.addEventListener('click', handleStep);
+    }
+
+
+    initialize();
+</script>
+
+</body>
+</html>
