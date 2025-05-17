@@ -3,8 +3,15 @@ Interactive visualization simulating how Gamma and Beta control ICS for faster c
 
 
 **_Affine Transformation:_**  
-The affine transformation can be written as:  
-\( y = \gamma \hat{x} + \beta \)
+After we normalize our pre-activations, we pass them through a linear transformation:
+
+<div align="center">
+
+![Affine Transformation Formula](./affine%20tranform.png)
+
+</div>
+
+
 
   
 We initialize gamma to 1 and beta to 0 in BatchNorm to ensure that the model begins training using the pure normalized output (zero mean and unit variance) without any learned distortion. By starting from this neutral configuration, the model can then learn, through gradient descent, how to adjust gamma and beta to scale and shift the activations in a way that improves performance. This approach preserves the benefits of normalization early on while allowing the network to later modify the distribution of activations as needed to enhance expressiveness.
