@@ -26,6 +26,8 @@ We initialize gamma to 1 and beta to 0 in BatchNorm to ensure that the model beg
 
 **_So, what Gamma and Beta actually do?_**  
 Geometrically speaking, variance influences the speed of our gradients across the loss landscape, while the mean guides their direction. Imposing unit variance through normalization can sometimes be overly restrictive, dampening the model's ability to make decisive moves toward the minima. Similarly, forcing a zero mean may misalign the gradient flow, especially in deeper layers where the network grows increasingly confident in its learned representations. As signals propagate deeper, the model begins to favor certain directions, and gradients reflect this bias. To accommodate and even encourage this behavior, we must allow the network to set a mean that aligns with its trajectory. The affine transformation step in Batch Normalization resolves these constraints: gamma scales the normalized activations to regulate gradient magnitude, while beta shifts them to guide the model's focus, effectively restoring the network's agency to navigate the loss landscape with both speed and intent.
+> *Feel free to tinker with the simulation and visualize how gamma and beta actually influence gradients and help reduce the loss.*
+
 
 **_Covariate Shift and how does it link to the affine transformation?_**  
 If you ever came across the original paper of BatchNorm, you'll notice that the main thing authors claim to address with their algorithm is the Internal Covariate Shift.  
