@@ -38,4 +38,4 @@ To understand how and why, all we have to do is link the dots. We saw that a uni
 
 Initially, they're set to one and zero respectively to ensure activations will be purely sampled from a zero mean and unit variance distribution. Then, in the backward pass, we compute how the loss changes with respect to Gamma and Beta which mirrors how much does the normalization impact the loss in the first training step. The gradients with respect to γ and β reflect how much the network wants to stretch or shift the normalized activations. In effect, the model sculpts its own input distribution for each layer, not to suppress ICS, but to control and leverage it. And the same workflow persists at every single layer, every single mini-batch, and every single epoch.  
 
-In conclusion, we can all agree that a moderate and controllable ICS is in fact lucrative and helps keep our activations stable while allowing informed statistical calibrations for faster convergence.
+**In conclusion, we can all agree that a moderate and controllable ICS is in fact lucrative and helps keep our activations stable while allowing informed statistical calibrations for faster convergence.**
